@@ -1,0 +1,160 @@
+name: CI Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_name:
+        description: 'Enter the file name to create (e.g. data.txt)'
+        required: true
+        default: 'data.txt'
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  # JOB 1 - Build Docker image and run container
+  # Runs in PARALLEL with JOB 2
+  # ─────────────────────────────────────────────
+  job1:
+    name: JOB 1 - Docker Build and Run
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t student-registry:latest .
+
+      - name: Run Docker container
+        run: |
+          docker run -d -p 8080:8080 --name student-registry-container student-registry:latest
+          echo "Container started successfully"
+
+  # ─────────────────────────────────────────────
+  # JOB 2 - File creation and manipulation
+  # Runs in PARALLEL with JOB 1
+  # ─────────────────────────────────────────────
+  job2:
+    name: JOB 2 - File Operations
+    runs-on: self-hosted
+    outputs:
+      file_path: ${{ steps.create_file.outputs.FILE_PATH }}
+    steps:
+      - name: Step 1 - Create file in folder1 with data
+        id: create_file
+        shell: powershell
+        run: |
+          $folder1 = "C:\job-folders\folder1"
+          New-Item -ItemType Directory -Force -Path $folder1
+
+          $fileName = "${{ github.event.inputs.file_name }}"
+          $filePath = "$folder1\$fileName"
+
+          # Write key-value data to file
+          Set-Content -Path $filePath -Value "KEY1=VALUE1`nKEY2=VALUE2"
+
+          echo "File created at: $filePath"
+          cat $filePath
+
+          # Set output variable
+          echo "FILE_PATH=$filePath" >> $env:GITHUB_OUTPUT
+
+      - name: Step 2 - Copy file to folder2
+        shell: powershell
+        run: |
+          $folder2 = "C:\job-folders\folder2"
+          New-Item -ItemType Directory -Force -Path $folder2
+
+          $fileName = "${{ github.event.inputs.file_name }}"
+          Copy-Item "C:\job-folders\folder1\$fileName" -Destination $folder2
+          echo "File copied to folder2"
+
+      - name: Step 3 - Replace KEY1 with KEY3 and VALUE2 with VALUE3 in folder2
+        shell: powershell
+        run: |
+          $fileName = "${{ github.event.inputs.file_name }}"
+          $filePath = "C:\job-folders\folder2\$fileName"
+
+          $content = Get-Content $filePath
+          $content = $content -replace "KEY1", "KEY3"
+          $content = $content -replace "VALUE2", "VALUE3"
+          Set-Content -Path $filePath -Value $content
+
+          echo "File content after replacements in folder2:"
+          cat $filePath
+
+  # ─────────────────────────────────────────────
+  # JOB 3 - Depends on JOB 2
+  # ─────────────────────────────────────────────
+  job3:
+    name: JOB 3 - Copy to folder3 and modify
+    runs-on: self-hosted
+    needs: job2
+    steps:
+      - name: Step 1 - Copy file from folder1 to folder3
+        shell: powershell
+        run: |
+          $folder3 = "C:\job-folders\folder3"
+          New-Item -ItemType Directory -Force -Path $folder3
+
+          $filePath = "${{ needs.job2.outputs.file_path }}"
+          Copy-Item $filePath -Destination $folder3
+
+          echo "File copied to folder3 from: $filePath"
+
+      - name: Step 2 - Replace VALUE1 with VALUE4 in folder3
+        shell: powershell
+        run: |
+          $fileName = "${{ github.event.inputs.file_name }}"
+          $filePath = "C:\job-folders\folder3\$fileName"
+
+          $content = Get-Content $filePath
+          $content = $content -replace "VALUE1", "VALUE4"
+          Set-Content -Path $filePath -Value $content
+
+          echo "File content after replacements in folder3:"
+          cat $filePath
+
+      - name: Step 3 - Sleep for 1 minute
+        shell: powershell
+        run: |
+          echo "Sleeping for 1 minute..."
+          Start-Sleep -Seconds 60
+          echo "Sleep done!"
+
+  # ─────────────────────────────────────────────
+  # JOB 4 - Depends on JOB 1 and JOB 3
+  # ─────────────────────────────────────────────
+  job4:
+    name: JOB 4 - List Docker Images
+    runs-on: self-hosted
+    needs: [job1, job3]
+    steps:
+      - name: Step 1 - List all Docker images
+        shell: powershell
+        run: |
+          echo "Listing all Docker images:"
+          docker images
+
+  # ─────────────────────────────────────────────
+  # JOB 5 - Always runs last, even if others fail
+  # ─────────────────────────────────────────────
+  job5:
+    name: JOB 5 - Cleanup Docker Images
+    runs-on: self-hosted
+    needs: [job1, job2, job3, job4]
+    if: always()
+    steps:
+      - name: Step 1 - Stop and remove container
+        shell: powershell
+        run: |
+          docker stop student-registry-container
+          docker rm student-registry-container
+          echo "Container removed"
+
+      - name: Step 2 - Remove all Docker images
+        shell: powershell
+        run: |
+          echo "Removing all Docker images..."
+          docker rmi $(docker images -q) --force
+          echo "All Docker images removed"
